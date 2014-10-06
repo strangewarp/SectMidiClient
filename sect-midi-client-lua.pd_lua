@@ -13,6 +13,15 @@ function SectClient:initialize(sel, atoms)
 	-- 3. Metronome timing value
 	self.outlets = 3
 
+	self.order = { -- Order in which the bytes of command-types FROM user devices should be sent TO Sect
+		note = {3, 1, 2},
+		key_after_touch = {1, 2},
+		control_change = {3, 2, 1},
+		patch_change = {2, 1},
+		channel_after_touch = {3, 1, 2},
+		pitch_wheel_change = {2, 1},
+	}
+
 	self.sus = {} -- Holds all sustain data for commands FROM Sect TO user devices
 
 	-- Populate the sustain-data table
@@ -48,50 +57,64 @@ function SectClient:in_1_list(list)
 		t[#t + 1] = ((#t == 2) and unit) or tonumber(unit)
 	end
 
-	pd.post("FROM SECT: " .. table.concat(t, " ")) -- debugging
+	pd.post("FROM SECT: " .. table.concat(t, " ") .. " (raw: " .. table.concat(list, " ") .. ")") -- debugging
 
 	-- Get BPM and TPQ values, leaving note values in table form
 	local bpm = table.remove(t, 1)
 	local tpq = table.remove(t, 1)
 
-	-- Update timing of external [metro] command, to trigger once every tick at current BPM/TPQ values
+	-- Seperate command-name from command-bytes
+	local cmd = table.remove(t, 1)
+
+	-- Get command's tick-position and channel
+	local tick = table.remove(t, 1)
+
+	-- If note, get duration, or default to 0
+	local dur = 0
+	if cmd == "note" then
+		dur = table.remove(t, 1)
+	end
+
+	-- Update timing of external [metro] command, to trigger once every tick, at current BPM/TPQ values
 	local ms = 60000 / (bpm * tpq * 4)
 	self:outlet(3, "float", {ms})
 
 	-- Format outgoing MIDI command for Pd's weird MIDI-send style
 	local out = {}
-	if t[5] == nil then
-		out = {t[1], t[4], t[3]}
-	elseif t[6] == nil then
-		out = {t[1], t[4], t[5], t[3]}
-	else
-		out = {t[1], t[5], t[6], t[4]}
+	for k, v in ipairs(self.order[cmd]) do
+		out[v] = t[k]
 	end
 
 	-- Send MIDI command to external MIDI device
-	self:outlet(2, "list", out)
+	self:outlet(2, cmd, out)
 
 	-- Record the note, and its duration, in the sustain-tracking table
-	if t[1] == "note" then
-		self.sus[t[4]][t[5]] = t[3]
+	if cmd == "note" then
+		self.sus[t[1]][t[2]] = dur
 	end
 
 end
 
 -- Get incoming MIDI commands from user devices, and send them to Sect
-function SectClient:in_2_list(t)
+function SectClient:in_2(sel, t)
 
-	-- Reorganize note into Sect-style formatting, with a placeholder duration of 1 tick
-	local out = {
-		t[1],
-		1,
-		t[4],
-		t[2],
-		t[3],
-	}
+	-- Serialize the MIDI-command information into a string, with the values reordered in Sect format
+	local otab = {}
+	local str = sel .. (((sel == 'note') and (" 0 0")) or " 0")
+	for k, v in ipairs(self.order[sel]) do
+		str = str .. " " .. t[v]
+	end
 
-	-- Send the note to the [netsend] apparatus
-	self:outlet(1, "list", t)
+	-- Convert the serialized comment into ASCII bytes, for UDP transfer
+	local conv = {}
+	for i = 1, str:len() do
+		conv[i] = str:byte(i)
+	end
+
+	pd.post("TO SECT: " .. str .. " (raw: " .. table.concat(conv, " ") .. ")")
+
+	-- Send the note to the [udpsend] apparatus
+	self:outlet(1, "send", conv)
 
 end
 
@@ -108,7 +131,7 @@ function SectClient:in_3_bang()
 		
 			-- If the duration has expired, send a note-off for the note, and unset its table value
 			if self.sus[chan][note] <= 1 then
-				self:outlet(2, "list", {"note", note, 0, chan})
+				self:outlet(2, "note", {note, 0, chan})
 				self.sus[chan][note] = nil
 			end
 			
