@@ -90,7 +90,9 @@ function SectClient:in_1_list(list)
 
 	-- Record the note, and its duration, in the sustain-tracking table
 	if cmd == "note" then
-		self.sus[t[1]][t[2]] = dur
+		self.sus[t[1]][t[2]] = self.sus[t[1]][t[2]] or {sust = 0, count = 0}
+		self.sus[t[1]][t[2]].sust = dur
+		self.sus[t[1]][t[2]].count = self.sus[t[1]][t[2]].count + 1
 	end
 
 end
@@ -124,14 +126,18 @@ function SectClient:in_3_bang()
 
 	-- Send automatic noteoffs for Sect-to-user-device notes whose durations have expired
 	for chan, notes in pairs(self.sus) do
-		for note, dur in pairs(notes) do
+		for note, tab in pairs(notes) do
+
+			local dur = tab.sust
 		
 			-- Decrease the sustain's duration value
-			self.sus[chan][note] = dur - 1
+			self.sus[chan][note].sust = dur - 1
 		
 			-- If the duration has expired, send a note-off for the note, and unset its table value
-			if self.sus[chan][note] <= 1 then
-				self:outlet(2, "note", {note, 0, chan})
+			if self.sus[chan][note].sust <= 1 then
+				for i = 1, self.sus[chan][note].count do
+					self:outlet(2, "note", {note, 0, chan})
+				end
 				self.sus[chan][note] = nil
 			end
 			
